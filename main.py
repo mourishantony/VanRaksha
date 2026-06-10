@@ -36,6 +36,23 @@ LABEL_ALIASES = {
     "bear":     "bear",   # handled directly — risk label: HIGH RISK – SLOTH BEAR
 }
 
+# COCO class IDs that correspond to human body parts / accessories.
+# These are frequently misclassified as animals by a custom tiger model.
+_COCO_BODY_PART_CLASS_IDS = {
+    # 'ear' doesn't exist in COCO but some custom models extend COCO with
+    # person-parts; block anything the tiger model calls < class 0 safety.
+    # More importantly, block these COCO person-adjacent IDs:
+    0,    # person (handled separately as human; not a wild animal)
+}
+
+# Minimum number of consecutive frames a species must appear before it is
+# treated as a confirmed detection (temporal smoothing).
+_CONFIRM_FRAMES = 3
+
+# Minimum detector confidence to pass temporal smoothing (stricter than
+# the runtime threshold which can be lowered by the user).
+_MIN_SMOOTH_CONF = 0.45
+
 
 def _normalize_label(label: str) -> str:
     value = (label or "").strip().lower()
@@ -118,6 +135,15 @@ def main():
     wild_labels = {"tiger", "leopard", "bear", "deer", "elephant"}
     human_labels = {_normalize_label(label) for label in config.HUMAN_LABELS if label}
     allowed_labels = wild_labels | human_labels
+
+    # ── Temporal smoothing state ─────────────────────────────────────────────
+    # Maps species → consecutive-frame count at or above confidence threshold.
+    _species_streak: dict[str, int] = {}
+    # Tracks whether each species is currently in "confirmed" state so we
+    # only log/count a new event when the detection first becomes confirmed
+    # (not every frame thereafter).
+    _species_confirmed: dict[str, bool] = {}
+    # ─────────────────────────────────────────────────────────────────────────
 
     fps_counter = 0
     tick = time.time()
@@ -211,11 +237,39 @@ def main():
                     label_override=label,
                 )
 
+            # Species seen this frame (for streak tracking)
+            species_this_frame: set[str] = set()
+
             for det in animal_detections:
                 bbox = det["bbox"]
                 yolo_label = det.get("label_norm", det.get("label", "unknown"))
+
+                # ── False-positive guard: skip COCO body-part class IDs ──────
+                if det.get("class_id") in _COCO_BODY_PART_CLASS_IDS and yolo_label not in wild_labels:
+                    continue
+                # Block tiny bboxes from the tiger model that are likely noise
+                # (e.g. ear patches): require bbox area ≥ 0.5% of frame area.
+                frame_area = frame.shape[0] * frame.shape[1]
+                bbox_area = max(0, bbox[2] - bbox[0]) * max(0, bbox[3] - bbox[1])
+                if bbox_area < 0.005 * frame_area:
+                    continue
+                # ─────────────────────────────────────────────────────────────
+
                 cls = classifier.classify(frame, bbox, yolo_label=yolo_label)
                 species = _normalize_label(cls["species"])
+
+                # ── Temporal smoothing ────────────────────────────────────────
+                species_this_frame.add(species)
+                if det["confidence"] >= conf_threshold:
+                    _species_streak[species] = _species_streak.get(species, 0) + 1
+                else:
+                    _species_streak[species] = 0
+
+                confirmed = _species_streak.get(species, 0) >= _CONFIRM_FRAMES
+                first_confirmation = confirmed and not _species_confirmed.get(species, False)
+                if confirmed:
+                    _species_confirmed[species] = True
+                # ─────────────────────────────────────────────────────────────
 
                 # Compute pixel distance to nearest human (used for distance-band scoring).
                 distance_px = _closest_human_distance(bbox, human_detections)
@@ -239,6 +293,24 @@ def main():
                 risk_label = get_risk_label(species)
 
                 annotate_detection(frame, bbox, species, det["confidence"], score, level, risk_label=risk_label)
+
+                # Always update live dashboard panel (even before confirmation)
+                # so the operator can see what is being tracked.
+                dashboard.emit_detection_state(
+                    {
+                        "species": species,
+                        "confidence": det["confidence"],
+                        "score": score,
+                        "alert_level": level.name,
+                        "risk_label": risk_label,
+                        "confirmed": confirmed,
+                    }
+                )
+
+                # Only act (alert / log / count) on the first confirmation frame
+                # to prevent duplicate counting across continuous detections.
+                if not first_confirmation:
+                    continue
 
                 voice_played = False
                 if level in (AlertLevel.CAUTION, AlertLevel.HIGH, AlertLevel.CRITICAL) and not shared_state.get("alert_mute", False):
@@ -278,6 +350,16 @@ def main():
                     f"conf:{det['confidence']:.2f} | score:{score:.1f} | {level.name} | "
                     f"SMS:{'sent' if sms_sent else 'skip'} | Voice:{'played' if voice_played else 'skip'}"
                 )
+
+            # ── Reset streak for species not seen this frame ───────────────
+            for sp in list(_species_streak.keys()):
+                if sp not in species_this_frame:
+                    _species_streak[sp] = 0
+                    _species_confirmed[sp] = False
+
+            # ── Emit reset when no animals are detected ────────────────────
+            if not animal_detections:
+                dashboard.emit_detection_state(None)
 
             if frame_queue.full():
                 try:

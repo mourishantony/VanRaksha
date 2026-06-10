@@ -10,7 +10,7 @@ __pycache__/
 dataset
 training_data
 training_runs
-
+uploads/
 # Distribution / packaging
 .Python
 build/

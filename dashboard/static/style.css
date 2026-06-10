@@ -108,4 +108,35 @@ tr.safe .risk-cell     { color:#7dff9e; }
 }
 .cam-resume-btn:hover { background: #00e077; }
 
+/* ── Fixed-height scrollable detection history ───────────────────────── */
+.events-scroll {
+  max-height: 260px;
+  overflow-y: auto;
+  margin-top: 12px;
+  border: 1px solid #1f3a27;
+  border-radius: 6px;
+}
+.events-scroll table { margin-top: 0; }
+.events-scroll thead th {
+  position: sticky;
+  top: 0;
+  background: #0a0f0a;
+  z-index: 1;
+}
+
+/* ── Return to Live Camera button ────────────────────────────────────── */
+.return-live-btn {
+  background: #1a3a2a;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 8px;
+  width: 100%;
+  transition: background 0.2s;
+}
+.return-live-btn:hover { background: #1f4a33; }
 

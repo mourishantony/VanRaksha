@@ -51,12 +51,15 @@
           <button id="stopVideoBtn" class="secondary">Stop video</button>
         </div>
         <div id="videoStatus" class="mono small">No video loaded</div>
+        <button id="returnLiveCamBtn" class="return-live-btn" style="display:none;">↩ Return to Live Camera</button>
       </div>
       <button id="muteBtn" aria-pressed="false">Mute voice</button>
-      <table>
-        <thead><tr><th>Timestamp</th><th>Species</th><th>Risk</th><th>Score</th><th>Alert</th></tr></thead>
-        <tbody id="eventsBody"></tbody>
-      </table>
+      <div class="events-scroll">
+        <table>
+          <thead><tr><th>Timestamp</th><th>Species</th><th>Risk</th><th>Score</th><th>Alert</th></tr></thead>
+          <tbody id="eventsBody"></tbody>
+        </table>
+      </div>
     </section>
   </main>
 

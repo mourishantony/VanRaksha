@@ -56,6 +56,14 @@ class DashboardServer:
         def api_stats():
             return jsonify(self.event_logger.get_stats())
 
+        @self.app.get("/api/last_alert")
+        def api_last_alert():
+            """Return the most recent alert event for persistence across page refresh."""
+            rows = self.event_logger.get_recent(1)
+            if rows:
+                return jsonify({"ok": True, "event": rows[0]})
+            return jsonify({"ok": False, "event": None})
+
         @self.app.post("/api/config")
         def api_config():
             data = request.get_json(silent=True) or {}
@@ -93,6 +101,8 @@ class DashboardServer:
         def api_video_stop():
             with self.state_lock:
                 self.shared_state["video_source"] = None
+            # Notify clients to switch back to live camera UI
+            self.socketio.emit("video_stopped", {})
             return jsonify({"ok": True})
 
         @self.app.post("/api/camera/stop")
@@ -143,6 +153,13 @@ class DashboardServer:
 
     def emit_new_alert(self, payload: dict) -> None:
         self.socketio.emit("new_alert", payload)
+
+    def emit_detection_state(self, payload: dict | None) -> None:
+        """Emit current detection state; pass None to reset dashboard to idle."""
+        if payload is None:
+            self.socketio.emit("detection_reset", {})
+        else:
+            self.socketio.emit("detection_state", payload)
 
     def emit_frame_stats(self, payload: dict) -> None:
         self.socketio.emit("frame_stats", payload)

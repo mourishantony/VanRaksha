@@ -33,6 +33,7 @@ class EventLogger:
                     confidence REAL,
                     threat_score REAL,
                     alert_level TEXT,
+                    risk_label TEXT,
                     bbox_x1 INTEGER, bbox_y1 INTEGER,
                     bbox_x2 INTEGER, bbox_y2 INTEGER,
                     sms_sent INTEGER DEFAULT 0,
@@ -40,6 +41,11 @@ class EventLogger:
                 )
                 """
             )
+            # Add risk_label column to existing databases (migration)
+            try:
+                self.conn.execute("ALTER TABLE events ADD COLUMN risk_label TEXT")
+            except Exception:
+                pass  # Column already exists
             self.conn.commit()
 
     def log_event(self, event: dict) -> int:
@@ -51,6 +57,7 @@ class EventLogger:
             "confidence": event.get("confidence", 0.0),
             "threat_score": event.get("threat_score", 0.0),
             "alert_level": event.get("alert_level", "SAFE"),
+            "risk_label": event.get("risk_label", ""),
             "bbox_x1": event.get("bbox", [0, 0, 0, 0])[0],
             "bbox_y1": event.get("bbox", [0, 0, 0, 0])[1],
             "bbox_x2": event.get("bbox", [0, 0, 0, 0])[2],
@@ -62,10 +69,10 @@ class EventLogger:
             cur = self.conn.execute(
                 """
                 INSERT INTO events (
-                    timestamp, camera_zone, species, confidence, threat_score, alert_level,
+                    timestamp, camera_zone, species, confidence, threat_score, alert_level, risk_label,
                     bbox_x1, bbox_y1, bbox_x2, bbox_y2, sms_sent, voice_played
                 ) VALUES (
-                    :timestamp, :camera_zone, :species, :confidence, :threat_score, :alert_level,
+                    :timestamp, :camera_zone, :species, :confidence, :threat_score, :alert_level, :risk_label,
                     :bbox_x1, :bbox_y1, :bbox_x2, :bbox_y2, :sms_sent, :voice_played
                 )
                 """,

@@ -4,6 +4,7 @@ const videoFileInput = document.getElementById('videoFile');
 const videoStatus = document.getElementById('videoStatus');
 const uploadBtn = document.getElementById('uploadBtn');
 const stopVideoBtn = document.getElementById('stopVideoBtn');
+const returnLiveCamBtn = document.getElementById('returnLiveCamBtn');
 
 function setVideoStatus(message) {
   if (!videoStatus) return;
@@ -39,7 +40,8 @@ async function refreshEvents() {
   });
 }
 
-socket.on('new_alert', data => {
+// ── Apply detection data to the live panel ────────────────────────────────
+function applyDetectionData(data) {
   document.getElementById('species').textContent = data.species || '-';
   document.getElementById('confidence').textContent = `${Math.round((data.confidence || 0) * 100)}%`;
   document.getElementById('score').textContent = data.score?.toFixed ? data.score.toFixed(1) : (data.score || 0);
@@ -49,15 +51,12 @@ socket.on('new_alert', data => {
   const level = (data.alert_level || 'SAFE').toLowerCase();
   badge.className = `badge ${level}`;
   badge.textContent = data.alert_level || 'SAFE';
-  document.getElementById('lastAlert').textContent = new Date().toLocaleString();
 
-  // Show risk label prominently when present.
   const riskLabel = data.risk_label || '';
   const riskLabelWrap = document.getElementById('riskLabelWrap');
   const riskLabelEl = document.getElementById('riskLabel');
   if (riskLabel) {
     riskLabelEl.textContent = riskLabel;
-    // Determine color class from label prefix.
     riskLabelEl.className = 'risk-label';
     if (riskLabel.startsWith('HIGH')) riskLabelEl.classList.add('risk-high');
     else if (riskLabel.startsWith('CRITICAL')) riskLabelEl.classList.add('risk-critical');
@@ -67,11 +66,76 @@ socket.on('new_alert', data => {
   } else {
     riskLabelWrap.style.display = 'none';
   }
+}
 
+// ── Reset live panel to idle defaults ────────────────────────────────────
+function resetDetectionPanel() {
+  document.getElementById('species').textContent = '-';
+  document.getElementById('confidence').textContent = '0%';
+  document.getElementById('score').textContent = '0';
+  document.getElementById('scoreBar').style.width = '0%';
+  document.getElementById('alertText').textContent = 'SAFE';
+  const badge = document.getElementById('alertBadge');
+  badge.className = 'badge safe';
+  badge.textContent = 'SAFE';
+  document.getElementById('riskLabelWrap').style.display = 'none';
+}
+// ─────────────────────────────────────────────────────────────────────────
+
+// Live detection state (every frame, confirmed or not) — updates panel
+socket.on('detection_state', data => {
+  applyDetectionData(data);
+});
+
+// Fired by server when no animals are detected in a frame
+socket.on('detection_reset', () => {
+  resetDetectionPanel();
+});
+
+socket.on('new_alert', data => {
+  // Update last alert time (persisted separately via localStorage)
+  const nowStr = new Date().toLocaleString();
+  document.getElementById('lastAlert').textContent = nowStr;
+  try { localStorage.setItem('vr_last_alert_time', nowStr); } catch (_) {}
+  // Refresh event history and stats after a confirmed alert
   refreshEvents();
+  refreshStats();
 });
 
 socket.on('frame_stats', () => {});
+
+// ── Restore persisted last alert + detection info on page load ────────────
+(async () => {
+  // Restore last alert time from localStorage first (instant)
+  try {
+    const cached = localStorage.getItem('vr_last_alert_time');
+    if (cached) document.getElementById('lastAlert').textContent = cached;
+  } catch (_) {}
+
+  // Then hydrate from the server's last logged event
+  try {
+    const res = await fetch('/api/last_alert');
+    const data = await res.json();
+    if (data.ok && data.event) {
+      const e = data.event;
+      // Restore live panel with last known detection
+      applyDetectionData({
+        species: e.species,
+        confidence: e.confidence,
+        score: e.threat_score,
+        alert_level: e.alert_level,
+        risk_label: e.risk_label || '',
+      });
+      // Set last alert time from db record
+      if (e.timestamp) {
+        const ts = new Date(e.timestamp).toLocaleString();
+        document.getElementById('lastAlert').textContent = ts;
+        try { localStorage.setItem('vr_last_alert_time', ts); } catch (_) {}
+      }
+    }
+  } catch (_) {}
+})();
+// ─────────────────────────────────────────────────────────────────────────
 
 // ── Camera stop / resume toggle ───────────────────────────────────────────
 const camToggleBtn = document.getElementById('camToggleBtn');
@@ -134,6 +198,8 @@ uploadBtn?.addEventListener('click', async () => {
       return;
     }
     setVideoStatus(`Playing: ${data.filename}`);
+    // Show "Return to Live Camera" button during video playback
+    if (returnLiveCamBtn) returnLiveCamBtn.style.display = '';
   } catch (err) {
     setVideoStatus('Upload failed.');
   }
@@ -148,11 +214,44 @@ stopVideoBtn?.addEventListener('click', async () => {
       setVideoStatus(data.error || 'Stop failed.');
       return;
     }
-    setVideoStatus('Video stopped.');
+    setVideoStatus('Video stopped. Switched to live camera.');
+    if (returnLiveCamBtn) returnLiveCamBtn.style.display = '';
   } catch (err) {
     setVideoStatus('Stop failed.');
   }
 });
+
+// ── Return to Live Camera button ──────────────────────────────────────────
+returnLiveCamBtn?.addEventListener('click', async () => {
+  try {
+    await fetch('/api/video/stop', { method: 'POST' });
+  } catch (_) {}
+  setVideoStatus('No video loaded');
+  if (returnLiveCamBtn) returnLiveCamBtn.style.display = 'none';
+  // Ensure camera is active
+  if (!camLive) {
+    try {
+      const res = await fetch('/api/camera/start', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        camLive = true;
+        camToggleBtn.textContent = '⏹ Stop Live Cam';
+        camToggleBtn.classList.remove('cam-resume-btn');
+        camToggleBtn.classList.add('cam-stop-btn');
+        camStatus.className = 'cam-dot live';
+        camStatusText.textContent = 'LIVE';
+      }
+    } catch (_) {}
+  }
+  resetDetectionPanel();
+});
+
+// Handle server-side video_stopped event (e.g. video ended naturally)
+socket.on('video_stopped', () => {
+  setVideoStatus('Video ended. Switched to live camera.');
+  if (returnLiveCamBtn) returnLiveCamBtn.style.display = '';
+});
+// ─────────────────────────────────────────────────────────────────────────
 
 setInterval(() => { refreshStats(); refreshEvents(); }, 4000);
 refreshStats();
